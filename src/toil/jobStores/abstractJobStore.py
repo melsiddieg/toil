@@ -132,38 +132,38 @@ class AbstractJobStore(object):
     __metaclass__ = ABCMeta
 
     @abstractmethod
-    def jobStoreString(self):
+    def jobStoreLocator(self):
         """
-        Returns the job store string representing the current job store.
+        Returns the job store locator string of the current job store.
 
         :rtype: str
         """
         raise NotImplementedError()
 
     @classmethod
-    def loadOrCreateJobStore(cls, jobStoreStr, config=None, **kwargs):
+    def loadOrCreateJobStore(cls, locator, config=None, **kwargs):
         """
         Factory method that constructs and returns an instance of a concrete job store regardless
-        of the state of its existence. Note that a non existent job store always requires a config.
+        of the state of its existence. Note that a non existent job store requires a config.
 
-        :param str jobStoreStr: A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         :param toil.common.Config config: see common.Toil.createJobStore
         :return: An instance of a concrete job store.
         :rtype: jobStores.abstractJobStore.AbstractJobStore
         :raises: JobStoreCreationException
         """
         if config is None:
-            return cls.loadJobStore(jobStoreStr, **kwargs)
+            return cls.loadJobStore(locator, **kwargs)
         else:
-            return cls.createJobStore(jobStoreStr, config, **kwargs)
+            return cls.createJobStore(locator, config, **kwargs)
 
     @abstractclassmethod
-    def loadJobStore(cls, jobStoreStr, **kwargs):
+    def loadJobStore(cls, locator, **kwargs):
         """
-        Factory method that loads the job store represented by the given jobStoreStr if it exists. If the
+        Factory method that loads the job store at the given location if it exists. If the
         job store does not exist a JobStoreCreationException is raised.
 
-        :param str jobStoreStr:  A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         :return: An instance of a concrete job store.
         :rtype: jobStores.abstractJobStore.AbstractJobStore
         :raises: JobStoreCreationException
@@ -194,12 +194,12 @@ class AbstractJobStore(object):
             self.__config = config
 
     @abstractclassmethod
-    def createJobStore(cls, jobStoreStr, config, **kwargs):
+    def createJobStore(cls, locator, config, **kwargs):
         """
-        Factory method that creates the job store represented by the given jobStoreStr if it does not exist.
+        Factory method that creates the job store at the given location if it does not exist.
         If the job store does exist a JobStoreCreationException is raised.
 
-        :param str jobStoreStr:  A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         :param toil.common.Config config: see common.Toil.createJobStore
         :return: Concrete job store instance.
         :raises: JobStoreCreationException
@@ -228,26 +228,28 @@ class AbstractJobStore(object):
             cPickle.dump(self.__config, fileHandle, cPickle.HIGHEST_PROTOCOL)
 
     @classmethod
-    def cleanJobStore(cls, jobStoreStr):
+    def cleanJobStore(cls, locator):
         """
-        Removes the job store represented by the jobStoreStr from the disk/store. Careful!
+        Deletes the job store at the given location including all of its files and components 
+        from the disk/store. Careful!
 
-        :param str jobStoreStr: A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         """
-        cls._deleteJobStore(jobStoreStr)
+        cls._deleteJobStore(locator)
 
     def deleteJobStore(self):
         """
-        Removes the current job store from the disk/store. Careful!
+        Deletes the current job store including all of its files and components from the disk/store.
+        Careful!
         """
-        self.cleanJobStore(self.jobStoreString())
+        self.cleanJobStore(self.jobStoreLocator())
 
     @abstractclassmethod
-    def _deleteJobStore(cls, jobStoreStr):
+    def _deleteJobStore(cls, locator):
         """
-        Deletes all remaining components of the job store represented by the job store string.
+        Deletes all remaining components of the job store at the given location.
 
-        :param str jobStoreStr: A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         """
         raise NotImplementedError()
 
@@ -303,18 +305,18 @@ class AbstractJobStore(object):
         return rootJob
 
     @abstractclassmethod
-    def jobStoreExists(cls, jobStoreStr):
+    def jobStoreExists(cls, locator):
         """
-        Returns True if and only if the job store represented by the job store string exists.
-        Otherwise False is returned.
+        Returns True if and only if the job store at the given location exists. Otherwise
+        False is returned.
 
-        :param str jobStoreStr: A string that uniquely identifies a job store.
+        :param str locator: The location of the job store.
         :rtype: bool
         """
         raise NotImplementedError()
 
     @classmethod
-    def _checkJobStoreCreation(cls, create, jobStoreStr):
+    def _checkJobStoreCreation(cls, create, locator):
         """
         Consistency checks which will result in exceptions if we attempt to overwrite an existing
         job store. This method must be called by the constructor of a subclass before any
@@ -323,15 +325,15 @@ class AbstractJobStore(object):
         :param bool create: a boolean indicating if the config will try to create a new job store
         :raise JobStoreCreationException:  if create == exists
         """
-        exists = cls.jobStoreExists(jobStoreStr)
+        exists = cls.jobStoreExists(locator)
         if create and exists:
             raise JobStoreCreationException("The job store '%s' already exists. Use --restart to "
                                             "resume the workflow, or remove the job store with "
                                             "'toil clean' to start the workflow from scratch" %
-                                            jobStoreStr)
+                                            locator)
         if not create and not exists:
             raise JobStoreCreationException("The job store '%s' does not exist, so there "
-                                            "is nothing to restart." % jobStoreStr)
+                                            "is nothing to restart." % locator)
 
     def importFile(self, srcUrl):
         """

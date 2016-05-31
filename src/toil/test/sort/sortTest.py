@@ -57,7 +57,7 @@ class SortTest(ToilTest, MesosTestSupport, ParasolTestSupport):
         than the given number of bytes, sorting each part and merging them back together. Then
         verify the result.
 
-        :param jobStore: a job store string
+        :param jobStore: a job store locator
 
         :param batchSystem: the name of the batch system
 

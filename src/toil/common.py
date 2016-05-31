@@ -226,12 +226,18 @@ def _addOptions(addGroupFn, config):
     location of the toil workflow and turn on stats collation about the performance of jobs.")
     #TODO - specify how this works when path is AWS
     addOptionFn('jobStore', type=str,
-                      help=("Store in which to place job management files \
-                      and the global accessed temporary files"
-                      "(If this is a file path this needs to be globally accessible "
-                      "by all machines running jobs).\n"
-                      "If the store already exists and restart is false an"
-                      " ExistingJobStoreException exception will be thrown."))
+                help=("Store in which to place job management files and the global accessed temporary"
+                      " files. Job store locator strings should be formatted as follows\n"
+                      "aws:<aws region>:<name prefix>\n"
+                      "azure:<account>:<name prefix>'\n"
+                      "google:<project id>:<name prefix>\n"
+                      "file:<file path>\n"
+                      "note that for backwards compatibility ./foo is equivalent to file:/foo and /bar is"
+                      " eqivalent to file:/bar\n"
+                      "(If this is a file path this needs to be globally accessible by all machines running "
+                      "jobs).\n"
+                      "If the store already exists and restart is false an ExistingJobStoreException exception"
+                      " will be thrown."))
     addOptionFn("--workDir", dest="workDir", default=None,
                 help="Absolute path to directory where temporary files generated during the Toil "
                      "run should be placed. Temp files and folders will be placed in a directory "
@@ -573,24 +579,24 @@ class Toil(object):
             self._shutdownBatchSystem()
 
     @staticmethod
-    def _extractJobStoreFromString(jobStoreStr):
+    def _extractJobStoreClsFromLocator(jobStoreLocator):
         """
-        Determines the class of the job store represented by the job store string. Imports and returns
-        the class along with the rest of the job store string as a tuple. If the class name is not
+        Determines the class of the job store at the given location. Imports and returns
+        the class along with the rest of the job store locator as a tuple. If the class name is not
         recognized a runtime error is raised.
 
-        :param str jobStoreStr: A string describing a job store.
+        :param str jobStoreLocator: The location of the job store. See exception message below.
         """
-        if jobStoreStr[0] in '/.':
-            jobStoreStr = 'file:' + jobStoreStr
+        if jobStoreLocator[0] in '/.':
+            jobStoreLocator = 'file:' + jobStoreLocator
         try:
-            jobStoreName, jobStoreArgs = jobStoreStr.split(':', 1)
+            jobStoreName, jobStoreArgs = jobStoreLocator.split(':', 1)
         except ValueError:
             raise RuntimeError(
-                'Job store string must either be a path starting in . or / or a contain at least one '
+                'Job store locator must either be a path starting in . or / or a contain at least one '
                 'colon separating the name of the job store implementation from an initialization '
                 'string specific to that job store. If a path starting in . or / is passed, the file '
-                'job store will be used for backwards compatibility.' )
+                'job store will be used for backwards compatibility.')
 
         if jobStoreName == 'file':
             from toil.jobStores.fileJobStore import FileJobStore
@@ -611,12 +617,12 @@ class Toil(object):
             raise RuntimeError("Unknown job store implementation '%s'" % jobStoreName)
 
     @classmethod
-    def createJobStore(cls, jobStoreStr, config):
+    def createJobStore(cls, locator, config):
         """
-        Creates a new job store described by the job store string. If the described job store
-        already exists a job store creation error is raised.
+        Creates a new job store at the given location. If such a job store already exists a 
+        job store creation error is raised.
 
-        :param str jobStoreStr:  A string describing a job store.
+        :param str locator: The location of the job store.
         :param toil.common.Config config: If config is not None then the given configuration object will be written
                to the shared file "config.pickle" which can later be retrieved using the
                readSharedFileStream. See writeConfigToStore. If this file already exists it will be
@@ -625,44 +631,45 @@ class Toil(object):
         :return: An instance of a concrete job store.
         :rtype: jobStores.abstractJobStore.AbstractJobStore
         """
-        jobStore, args = cls._extractJobStoreFromString(jobStoreStr)
+        jobStore, args = cls._extractJobStoreClsFromLocator(locator)
         return jobStore.createJobStore(args, config=config)
 
     @classmethod
-    def loadJobStore(cls, jobStoreStr):
+    def loadJobStore(cls, locator):
         """
-        Loads the job store represented by the job store string if it exists. A job store creation
-        error is raised if the job store does not exist.
+        Loads the job store at the given location if it exists. A job store creation error is raised if
+        the job store does not exist.
 
-        :param str jobStoreStr:  A string describing a job store.
+        :param str locator: The location of the job store.
         :return: An instance of a concrete job store.
         :rtype: jobStores.abstractJobStore.AbstractJobStore
         :raises: JobStoreCreationException
         """
-        jobStore, args = cls._extractJobStoreFromString(jobStoreStr)
+        jobStore, args = cls._extractJobStoreClsFromLocator(locator)
         return jobStore.loadJobStore(args)
 
     @classmethod
-    def loadOrCreateJobStore(cls, jobStoreStr, config=None):
+    def loadOrCreateJobStore(cls, locator, config=None):
         """
-        Loads an existing jobStore if it already exists. Otherwise a new instance of a jobStore is
+        Loads a jobStore at the given location if it exists. Otherwise a new instance of a jobStore is
         created and returned.
 
-        :param str jobStoreStr: A string describing a job store.
-        :param toil.common.Config config: see createJobStore
+        :param str locator: The location of the job store.
+        :param toil.common.Config config: See createJobStore.
         :return: An instance of a concrete job store.
         :rtype: jobStores.abstractJobStore.AbstractJobStore
         :raises: JobStoreCreationException
         """
-        return cls.loadOrCreateJobStore(jobStoreStr, config=config)
+        return cls.loadOrCreateJobStore(locator, config=config)
 
     @classmethod
-    def clean(cls, jobStoreStr):
+    def clean(cls, jobStoreLocator):
         """
-        Cleans up the job store represented by the job store string.
-        :param str jobStoreStr: A string describing a job store.
+        Deletes all components and files of the job store at the given location.
+        
+        :param str jobStoreLocator: The location of the job store.
         """
-        jobStoreCls, jobStoreArgs = cls._extractJobStoreFromString(jobStoreStr)
+        jobStoreCls, jobStoreArgs = cls._extractJobStoreClsFromLocator(jobStoreLocator)
         jobStoreCls.cleanJobStore(jobStoreArgs)
 
     @staticmethod
@@ -671,10 +678,10 @@ class Toil(object):
         Creates an instance of the batch system specified in the given config. If a job store and a user
         script are given then the user script can be hot deployed into the workflow.
 
-        :param toil.common.Config config: the current configuration
-        :param jobStores.abstractJobStore.AbstractJobStore jobStore: an instance of a jobStore
-        :param ModuleDescriptor userScript: a user supplied script to use for hot development
-        :return: an instance of a concrete subclass of AbstractBatchSystem
+        :param toil.common.Config config: See createJobStore.
+        :param jobStores.abstractJobStore.AbstractJobStore jobStore: An instance of a concrete job store.
+        :param ModuleDescriptor userScript: A user supplied script to use for hot development.
+        :return: An instance of a concrete subclass of AbstractBatchSystem.
         :rtype: batchSystems.abstractBatchSystem.AbstractBatchSystem
         """
         kwargs = dict(config=config,

@@ -569,18 +569,18 @@ class hidden:
             self.assertTrue(cacheTime <= noCacheTime)
 
         def testClean(self):
-            jobStoreStr = self.master.jobStoreString()
-            self.master.cleanJobStore(jobStoreStr)
-            self.assertFalse(self.master.jobStoreExists(jobStoreStr))
+            jobStoreLocator = self.master.jobStoreLocator()
+            self.master.cleanJobStore(jobStoreLocator)
+            self.assertFalse(self.master.jobStoreExists(jobStoreLocator))
 
         def testPartialClean(self):
             """
             Tests job store cleaning when part of the job store is corrupted or deleted.
             """
-            jobStoreStr = self.master.jobStoreString()
+            jobStoreLocator = self.master.jobStoreLocator()
             self._corruptJobStore()
-            self.master.cleanJobStore(jobStoreStr)
-            self.assertFalse(self.master.jobStoreExists(jobStoreStr))
+            self.master.cleanJobStore(jobStoreLocator)
+            self.assertFalse(self.master.jobStoreExists(jobStoreLocator))
 
         @abstractmethod
         def _corruptJobStore(self):

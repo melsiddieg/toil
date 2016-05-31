@@ -26,9 +26,9 @@ class GoogleJobStore(AbstractJobStore):
     def jobStoreLocator(self):
         """
         The formatting for a Google job store locator is as follows:
-            google:<name prefix>:<project id>
+            google:<project id>:<name prefix>
         """
-        return 'google:%s:%s' % (self.namePrefix, self.projectID)
+        return 'google:%s:%s' % (self.projectID, self.namePrefix)
 
     @classmethod
     def _processLocator(cls, jobStoreLocator):
