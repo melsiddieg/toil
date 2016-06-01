@@ -23,6 +23,8 @@ import os
 import tempfile
 import stat
 import errno
+
+from bd2k.util.expando import Expando
 from toil.lib.bioio import absSymPath
 from toil.jobStores.abstractJobStore import (AbstractJobStore, NoSuchJobException,
                                              NoSuchFileException)
@@ -36,43 +38,85 @@ class FileJobStore(AbstractJobStore):
     Represents the toil using a network file system. For doc-strings of functions see
     AbstractJobStore.
     """
-    def jobStoreString(self):
-        return self.jobStoreDir
+    def jobStoreLocator(self):
+        """
+        The formatting for a File job store locator is as follows:
+            file:<file path>
 
-    def __init__(self, jobStoreDir, config=None):
+        Note that for backwards compatibility a file path '/f' or './f' is equivalent
+        to 'file:/f' or 'file:./f' respectively.
+        """
+        return 'file:' + self.jobStoreDir
+
     @classmethod
-    def _extractArgsFromString(cls, jobStoreStr):
-        jobStoreDir = absSymPath(jobStoreStr)
+    def _processLocator(cls, jobStoreLocator):
+        """
+        Processes the job store locator and returns an Expando object containing the absolute job
+        store directory path and the absolute temp file directory path.
+
+        :param str locator: The location of the job store.
+        :return: An Expando object containing the directory path and temp file directory path
+        :rtype: bd2k.util.expando.Expando
+        :raises: ValueError
+        """
+        if jobStoreLocator.startswith('file:'):
+            jobStoreLocator = jobStoreLocator.replace('file:', '', 1)
+
+        jobStoreDir = absSymPath(jobStoreLocator)
         tempFilesDir = os.path.join(jobStoreDir, "tmp")
-        return jobStoreDir, tempFilesDir
-        """
-        :param jobStoreDir: Place to create jobStore
-        :param config: See jobStores.abstractJobStore.AbstractJobStore.__init__
-        :raise RuntimeError: if config != None and the jobStore already exists or
-        config == None and the jobStore does not already exists. 
-        """
-        # This is root directory in which everything in the store is kept
-        self.jobStoreDir = absSymPath(jobStoreDir)
-        logger.info("Jobstore directory is: %s", self.jobStoreDir)
-        # Safety checks for existing jobStore
-        self._checkJobStoreCreation(create=config is not None,
-                                    exists=os.path.exists(self.jobStoreDir),
-                                    jobStoreString=self.jobStoreDir)
-        # Directory where temporary files go
-        self.tempFilesDir = os.path.join(self.jobStoreDir, "tmp")
-        # Creation of jobStore, if necessary
-        if config is not None:
-            os.mkdir(self.jobStoreDir)
-            os.mkdir(self.tempFilesDir)
-        # Parameters for creating temporary files
-        self.validDirs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-        self.levels = 2
-        super(FileJobStore, self).__init__(config=config)
+        return Expando(jobStoreDir=jobStoreDir, tempFilesDir=tempFilesDir)
+
+    # Parameters for creating temporary files
+    validDirs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    levels = 2
 
     @classmethod
-    def _deleteJobStore(cls, jobStoreStr):
+    def createJobStore(cls, locator, config, **kwargs):
+        cls._checkJobStoreCreation(create=True, locator=locator)
+        info = cls._processLocator(locator)
+
+        os.mkdir(info.jobStoreDir)
+        os.mkdir(info.tempFilesDir)
+
+        jobStore = cls(info.jobStoreDir, info.tempFilesDir, config=config, **kwargs)
+        jobStore._createJobStore(config)
+        return jobStore
+
+    @classmethod
+    def loadJobStore(cls, locator, **kwargs):
+        cls._checkJobStoreCreation(create=False, locator=locator)
+        info = cls._processLocator(locator)
+        jobStore = cls(info.jobStoreDir, info.tempFilesDir, **kwargs)
+        jobStore._loadJobStore()
+        return jobStore
+
+    # Do not invoke the constructor, use the factory method above.
+
+    def __init__(self, jobStoreDir, tempFilesDir, config=None):
+        """
+        Creates a new FileJobStore instance with the given components.
+
+        :param str jobStoreDir: Place to create the jobStore.
+        :param str tempFilesDir: Place to create temporary files for the job store.
+        :param toil.common.Config config: the config object to written to this job store.
+            Must be None for existing job stores. Must not be None for new job stores.
+        """
+        self.jobStoreDir = jobStoreDir
+        logger.info("Jobstore directory is: %s", self.jobStoreDir)
+        self.tempFilesDir = tempFilesDir
+
+        super(FileJobStore, self).__init__()
+
+    @classmethod
+    def jobStoreExists(cls, locator):
+        info = cls._processLocator(locator)
+        return os.path.exists(info.jobStoreDir)
+
+    @classmethod
+    def _deleteJobStore(cls, locator):
+        info = cls._processLocator(locator)
         try:
-            shutil.rmtree(jobStoreStr)
+            shutil.rmtree(info.jobStoreDir)
         except OSError:
             pass
 

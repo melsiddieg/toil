@@ -33,6 +33,7 @@ from azure.storage.blob import BlobService, BlobSharedAccessPermissions
 
 import requests
 from bd2k.util import strict_bool
+from bd2k.util.expando import Expando
 
 from bd2k.util.threading import ExceptionalThread
 
@@ -80,26 +81,46 @@ def _sanitizeTableName(tableName):
 
     This will never cause a collision if uuids are used, but
     otherwise may not be safe.
+
+    :param str tableName: String representing name of the table.
+    :rtype: str
     """
     return sanitizeChar + filter(lambda x: x.isalnum(), tableName)
 
 maxAzureTablePropertySize = 64 * 1024
 sanitizeChar = 'a'
 
+
 class AzureJobStore(AbstractJobStore):
     """
     A job store that uses Azure's blob store for file storage and
-    Table Service to store job info with strong consistency."""
+    Table Service to store job info with strong consistency.
+    """
 
-    def __init__(self, accountName, namePrefix, config=None, jobChunkSize=maxAzureTablePropertySize):
-        self.jobChunkSize = jobChunkSize
-        self.keyPath = None
-    def jobStoreString(self):
-        return self.accountName + ':' + self.namePrefix
+    def jobStoreLocator(self):
+        """
+        The formatting for a Azure job store locator is as follows:
+            azure:<account>:<name prefix>
+        """
+        return 'azure:%s:%s' % (self.accountName, self.namePrefix)
 
     @classmethod
-    def _extractArgsFromString(cls, jobStoreStr):
-        account, prefix = jobStoreStr.split(':', 1)
+    def _processLocator(cls, jobStoreLocator):
+        """
+        Processes the job store locator and returns an Expando object containing
+        the account name as a string, account key as a string, name prefix as a string, the table
+        service object, and blob service object. If the prefix is invalid an error is raised.
+
+        :param str locator: The location of the job store.
+        :return: An Expando object containing account name, account key, name prefix, table service,
+            and blob service.
+        :rtype: bd2k.util.expando.Expando
+        :raises: ValueError
+        """
+        if jobStoreLocator.startswith('azure:'):
+            jobStoreLocator = jobStoreLocator.replace('azure:', '', 1)
+
+        account, prefix = jobStoreLocator.split(':', 1)
         if '--' in prefix:
             raise ValueError("Invalid name prefix '%s'. Name prefixes may not contain "
                              "%s." % (prefix, cls.nameSeparator))
@@ -119,14 +140,17 @@ class AzureJobStore(AbstractJobStore):
                              "%s." % (prefix, cls.nameSeparator))
 
         accountKey = _fetchAzureAccountKey(account)
-
         tableService = TableService(account_key=accountKey, account_name=account)
         blobService = BlobService(account_key=accountKey, account_name=account)
 
-        if not prefix.statsWith(sanitizeChar):  # prevent re-sanitization
+        if not prefix.startswith(sanitizeChar):  # prevent re-sanitization
             prefix = _sanitizeTableName(prefix)
 
-        return account, accountKey, prefix, tableService, blobService
+        return Expando(accountName=account,
+                       accountKey=accountKey,
+                       namePrefix=prefix,
+                       tableService=tableService,
+                       blobService=blobService)
 
     @classmethod
     def _qualify(cls, name, namePrefix):
@@ -148,9 +172,108 @@ class AzureJobStore(AbstractJobStore):
     jobIDLength = len(str(uuid.uuid4()))
 
     @classmethod
+    def createJobStore(cls, locator, config, **kwargs):
+        cls._checkJobStoreCreation(create=True, locator=locator)
+        info = cls._processLocator(locator)
+        jobStore = cls(accountName=info.accountName, accountKey=info.accountKey, namePrefix=info.namePrefix,
+                       tableService=info.tableService, blobService=info.blobService,
+                       jobItems=cls._createTable(info.tableService, cls._qualify('jobs', info.namePrefix)),
+                       jobFileIDs=cls._createTable(info.tableService, cls._qualify('jobFileIDs', info.namePrefix)),
+                       files=cls._createBlobContainer(info.blobService, cls._qualify('files', info.namePrefix)),
+                       statsFiles=cls._createBlobContainer(info.blobService, cls._qualify('statsfiles',
+                                                                                          info.namePrefix)),
+                       statsFileIDs=cls._createTable(info.tableService, cls._qualify('statsFileIDs', info.namePrefix)),
+                       config=config, **kwargs)
+
+        jobStore._createJobStore(config)
+        if jobStore.config.cseKey is not None:
+            jobStore.keyPath = jobStore.config.cseKey
+        return jobStore
+
+    @classmethod
+    def loadJobStore(cls, locator, **kwargs):
+        cls._checkJobStoreCreation(create=False, locator=locator)
+        info = cls._processLocator(locator)
+        jobStore = cls(accountName=info.accountName, accountKey=info.accountKey, namePrefix=info.namePrefix,
+                       tableService=info.tableService, blobService=info.blobService,
+                       jobItems=cls._getTable(info.tableService, cls._qualify('jobs', info.namePrefix)),
+                       jobFileIDs=cls._getTable(info.tableService, cls._qualify('jobFileIDs', info.namePrefix)),
+                       files=cls._getBlobContainer(info.blobService, cls._qualify('files', info.namePrefix)),
+                       statsFiles=cls._getBlobContainer(info.blobService, cls._qualify('statsfiles', info.namePrefix)),
+                       statsFileIDs=cls._getTable(info.tableService, cls._qualify('statsFileIDs', info.namePrefix)),
+                       config=None, **kwargs)
+
+        jobStore._loadJobStore()
+        if jobStore.config.cseKey is not None:
+            jobStore.keyPath = jobStore.config.cseKey
+        return jobStore
+
+    # Do not invoke the constructor, use the factory method above.
+
+    def __init__(self, accountName, accountKey, namePrefix, tableService, blobService, jobItems, jobFileIDs, files,
+                 statsFiles, statsFileIDs, config=None, jobChunkSize=maxAzureTablePropertySize):
+        """
+        Creates a new AzureJobStore instance with the given components.
+
+        :param str accountName: Name of Azure account.
+        :param str accountKey: The key that corresponds with the given account name.
+        :param str namePrefix: Job store components will be prefixed with this.
+        :param azure.storage.table.tableservice.TableService tableService: Table service that corresponds
+            with the given account.
+        :param azure.storage.blob.blobservice.BlobService blobService: Blob service that corresponds with
+            the given account.
+        :param azure.storage.table.Table jobItems: Table of serialized jobs.
+        :param azure.storage.table.Table jobFileIDs: Table that maps files to jobs.
+        :param azure.storage.blob.Container files: Container for all shared and unshared files.
+        :param azure.storage.blob.Container statsFiles: Container for stats and logging strings.
+        :param azure.storage.table.Table statsFileIDs: Table of file IDs that contain stats and logging
+            strings.
+        :param toil.common.Config config: the config object to written to this job store.
+            Must be None for existing job stores. Must not be None for new job stores.
+        :param int jobChunkSize: Size of a chunk for splitting up the serialized job into chunks
+            that each fit into a property value of the an Azure table entity.
+        """
+
+        self.jobChunkSize = jobChunkSize
+        self.keyPath = None
+        self.account_key = accountKey
+        self.accountName = accountName
+        self.namePrefix = namePrefix
+        logger.debug("Creating job store with name prefix '%s'" % self.namePrefix)
+
+        # These are the main API entrypoints.
+        self.tableService = tableService
+        self.blobService = blobService
+
+        # containers
+        self.files = files
+        self.statsFiles = statsFiles
+
+        # tables
+        self.jobItems = jobItems
+        self.jobFileIDs = jobFileIDs
+        self.statsFileIDs = statsFileIDs
+
+        self.updateRegistry(self.namePrefix, self.tableService, exists=True)
+        super(AzureJobStore, self).__init__()
+
+    @classmethod
+    def jobStoreExists(cls, locator):
+        info = cls._processLocator(locator)
+        registryTable = cls._getOrCreateTable(info.tableService, 'toilRegistry')
+        for attempt in retry_on_error():
+            with attempt:
+                return registryTable.get_entity(row_key=info.namePrefix) is not None
+
+    @classmethod
     def updateRegistry(cls, namePrefix, tableService, exists):
         """
         Writes the value of exist to the registry.
+
+        :param str namePrefix: see __init__
+        :param azure.storage.table.tableservice.TableService tableService: Table service corresponds with
+            the job store.
+        :param bool exists: True if the job store exists False otherwise.
         """
         registryTable = cls._getOrCreateTable(tableService, 'toilRegistry')
         if exists:
@@ -217,22 +340,21 @@ class AzureJobStore(AbstractJobStore):
             self.deleteFile(jobStoreFileID)
 
     @classmethod
-    def _deleteJobStore(cls, jobStoreStr):
-        account, accountKey, prefix, tableService, _ = cls._extractArgsFromString(jobStoreStr)
-        cls.updateRegistry(prefix, tableService, False)
+    def _deleteJobStore(cls, locator):
+        info = cls._processLocator(locator)
+        cls.updateRegistry(info.namePrefix, info.tableService, False)
 
         for tableName in ('jobs', 'jobFileIDs', 'statsFileIDs'):
             try:
-                table = cls._getTable(tableService, cls._qualify(tableName, prefix))
+                table = cls._getTable(info.tableService, cls._qualify(tableName, info.namePrefix))
             except RuntimeError:
                 pass  # Table has been deleted.
             else:
                 table.delete_table()
 
-        blobService = BlobService(account_key=accountKey, account_name=account)
         for containerName in ('files', 'statsfiles'):
             try:
-                container = cls._getBlobContainer(blobService, cls._qualify(containerName, prefix))
+                container = cls._getBlobContainer(info.blobService, cls._qualify(containerName, info.namePrefix))
             except RuntimeError:
                 pass  # Container has been deleted.
             else:
